@@ -1,12 +1,12 @@
 # dsh-recall
 
+[Русская версия](./README-RU.md) · **English**
+
 A context-reclaim plugin for the **DeepSeek Harness** (`dsh`). A big tool result keeps its first
 600 characters in the conversation; the rest is written to disk under a short object id, and the
 model can pull any slice of it back with `recall("<id>")`. A strip under the composer reports the
 three numbers that decide whether the trade is worth it: how much was moved out, how many tokens
 that kept out of the context, and how often the model actually went back for more.
-
-[Русская версия](./README-RU.md)
 
 ## Why
 
