@@ -27,6 +27,10 @@ window.__ModuleLoader__.load({
         recent: 'Recent',
         empty: 'No result has crossed the size threshold yet.',
         look: 'threshold {n} chars',
+        offLbl: 'offloaded',
+        savedLbl: 'tokens kept out of the context',
+        backLbl: 'recall calls',
+        charsLbl: 'chars of text on disk',
       },
       ru: {
         strip: 'память',
@@ -35,6 +39,10 @@ window.__ModuleLoader__.load({
         recent: 'Последние',
         empty: 'Ни один результат ещё не превысил порог.',
         look: 'порог {n} симв.',
+        offLbl: 'вынесено',
+        savedLbl: 'токенов не попало в контекст',
+        backLbl: 'обращений recall',
+        charsLbl: 'символов текста на диске',
       },
     }
 
@@ -95,6 +103,12 @@ window.__ModuleLoader__.load({
       .rc-row code{font-family:var(--rc-mono);font-size:10px;color:var(--rc-text)}
       .rc-row span{font-family:var(--rc-mono);font-size:9.5px;color:var(--rc-muted);white-space:nowrap}
       .rc-empty{padding:3px 8px;font-size:10px;color:var(--rc-muted)}
+      .rc-stats{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:0 0 8px}
+      .rc-stat{display:flex;flex-direction:column;gap:1px;padding:5px 8px;border-radius:8px;
+        background:color-mix(in srgb,var(--rc-line) 20%,transparent)}
+      .rc-stat b{font-family:var(--rc-mono);font-size:13px;font-weight:700;line-height:1.15;
+        color:var(--rc-text);font-variant-numeric:tabular-nums}
+      .rc-stat i{font-style:normal;font-size:9px;line-height:1.3;color:var(--rc-muted)}
     `
 
     function useStats() {
@@ -166,6 +180,14 @@ window.__ModuleLoader__.load({
                 h('span', { className: 'rc-thr' }, T('look', { n: nf(data.threshold) })),
               ),
               h('p', { className: 'rc-note' }, T('hint')),
+              h(
+                'div',
+                { className: 'rc-stats' },
+                h('div', { className: 'rc-stat' }, h('b', null, nf(data.tokensSaved)), h('i', null, T('savedLbl'))),
+                h('div', { className: 'rc-stat' }, h('b', null, nf(data.offloaded)), h('i', null, T('offLbl'))),
+                h('div', { className: 'rc-stat' }, h('b', null, nf(data.recalls)), h('i', null, T('backLbl'))),
+                h('div', { className: 'rc-stat' }, h('b', null, kk(data.charsSaved)), h('i', null, T('charsLbl'))),
+              ),
               recent.length === 0
                 ? h('div', { className: 'rc-empty' }, T('empty'))
                 : recent.map((e, i) =>
@@ -186,7 +208,7 @@ window.__ModuleLoader__.load({
           data.offloaded
             ? h('span', { className: 'rc-num' }, nf(data.offloaded))
             : h('span', { className: 'rc-dim' }, T('none')),
-          data.offloaded ? h('span', { className: 'rc-dim' }, `· ${kk(data.tokensSaved)} tok`) : null,
+          data.offloaded ? h('span', { className: 'rc-dim' }, `· −${kk(data.tokensSaved)} tok`) : null,
           data.recalls ? h('span', { className: 'rc-dim' }, `· ↺${nf(data.recalls)}`) : null,
         ),
       )

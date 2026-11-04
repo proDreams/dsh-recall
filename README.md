@@ -43,6 +43,35 @@ there the lever is fresh input and step count instead.
 - Is idempotent: a result that already contains the `[recall]` marker is skipped, so restarts and
   repeated passes do not stack pointers.
 
+## What this is not: the 15% compaction
+
+`dsh-recall` never decides *when* the context gets compressed and never touches the context window.
+The percentage-based compression is the stock `@deepseek-ai/dsh-compaction-basic` plugin, configured in
+the profile's own patch layer (`~/.dsh/profiles/<profile>/cordis.patch.yml`):
+
+```yaml
+- id: compaction-basic
+  name: "@deepseek-ai/dsh-compaction-basic"
+  config:
+    thresholdRatio: 0.15
+    retainRatio: 0.05
+```
+
+`thresholdRatio` is the share of the model's window at which a compaction pass starts; `retainRatio` is
+the share kept afterwards. The stock defaults are `0.8` / `0.16`. On this machine the desktop profile
+runs `0.15 / 0.05`, so a 256k window compacts at ~38k tokens and keeps ~13k — a much smaller working
+window than the model allows. That is the knob to raise if you need more room:
+
+```yaml
+thresholdRatio: 0.6   # compact at 60% of the window instead of 15%
+retainRatio: 0.15
+```
+
+The two mechanisms are independent and complementary: compaction rewrites the *whole* history into a
+summary once the window fills up, while `dsh-recall` leaves the history intact and only shortens
+individual large tool results — which is what delays the moment compaction has to run. Disabling recall
+does not change the 15%, and raising the 15% does not change what recall does.
+
 ## The pill
 
 A compact pill in `shell.overlay` that stacks directly above the **dsh-tidewatch** badge when that
