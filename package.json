@@ -1,6 +1,6 @@
 {
   "name": "dsh-recall",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Move big tool results out of the conversation to disk, keep their head inline, and let the model pull the rest back with recall(id). A strip under the composer shows what was offloaded and how often it was needed.",
   "type": "module",
   "main": "./index.js",
