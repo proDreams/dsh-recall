@@ -1,0 +1,17 @@
+# dependencies (junction links / installed packages)
+node_modules/
+
+# build artifacts
+*.tgz
+*.zip
+
+# IDE
+.idea/
+.vscode/
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# logs
+*.log
