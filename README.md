@@ -43,10 +43,13 @@ there the lever is fresh input and step count instead.
 - Is idempotent: a result that already contains the `[recall]` marker is skipped, so restarts and
   repeated passes do not stack pointers.
 
-## The strip
+## The pill
 
-Docks in `conversation.composer.dock` (session-scoped: it does not exist on the hero screen, which
-is correct, not a bug). Copy follows the interface language (en/ru). Click to expand the last 12
+A compact pill in `shell.overlay` that stacks directly above the **dsh-tidewatch** badge when that
+plugin is installed — it reads the tide chip's rect every 500 ms and aligns itself to it, so the two
+look like one card, and falls back to the bottom-right corner when tidewatch is absent. Nothing is
+shared with tidewatch beyond a CSS class name, so the two plugins stay independent packages with
+their own releases. Copy follows the interface language (en/ru). Click to expand the last 12
 offloads with tool name, size and age. Data comes from `GET /recall/api/stats` on the host's
 loopback port, polled every 12 s:
 
