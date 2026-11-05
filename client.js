@@ -31,6 +31,10 @@ window.__ModuleLoader__.load({
         savedLbl: 'tokens kept out of the context',
         backLbl: 'recall calls',
         charsLbl: 'chars of text on disk',
+        agoS: 's',
+        agoM: 'min',
+        agoH: 'h',
+        agoD: 'd',
       },
       ru: {
         strip: 'память',
@@ -43,34 +47,46 @@ window.__ModuleLoader__.load({
         savedLbl: 'токенов не попало в контекст',
         backLbl: 'обращений recall',
         charsLbl: 'символов текста на диске',
+        agoS: 'с',
+        agoM: 'мин',
+        agoH: 'ч',
+        agoD: 'дн',
       },
     }
 
-    function useT() {
-      let lang = 'en'
+    function detectLang() {
       try {
-        if (typeof navigator !== 'undefined' && /^ru/i.test(navigator.language || '')) lang = 'ru'
+        if (typeof navigator !== 'undefined' && /^ru/i.test(navigator.language || '')) return 'ru'
       } catch {}
+      return 'en'
+    }
+
+    function useT() {
+      const lang = detectLang()
       const T = STR[lang] ?? STR.en
       return (key, vars) =>
         String(T[key] ?? STR.en[key] ?? key).replace(/\{(\w+)\}/g, (_, k) => (vars && k in vars ? vars[k] : `{${k}}`))
     }
 
-    const nf = (n) => Number(n || 0).toLocaleString('ru-RU')
+    const locale = () => (detectLang() === 'ru' ? 'ru-RU' : 'en-US')
+    const nf = (n) => Number(n || 0).toLocaleString(locale())
     const kk = (n) => {
       const v = Number(n || 0)
-      if (v >= 1e6) return (v / 1e6).toFixed(1).replace('.', ',') + 'M'
+      const decimal = detectLang() === 'ru' ? ',' : '.'
+      if (v >= 1e6) return (v / 1e6).toFixed(1).replace('.', decimal) + 'M'
       if (v >= 1e3) return Math.round(v / 1e3) + 'k'
       return String(v)
     }
 
-    function ago(ts) {
+    // Age suffixes are words, so they come from the copy table instead of being
+    // hardcoded Russian in what claims to be an en/ru plugin.
+    function ago(ts, T) {
       const s = Math.max(1, Math.round((Date.now() - ts) / 1000))
-      if (s < 60) return `${s} с`
+      if (s < 60) return `${s} ${T('agoS')}`
       const m = Math.round(s / 60)
-      if (m < 60) return `${m} мин`
+      if (m < 60) return `${m} ${T('agoM')}`
       const hrs = Math.round(m / 60)
-      return hrs < 24 ? `${hrs} ч` : `${Math.round(hrs / 24)} дн`
+      return hrs < 24 ? `${hrs} ${T('agoH')}` : `${Math.round(hrs / 24)} ${T('agoD')}`
     }
 
     // The --rc-* tokens default to the shell's own palette, so the pill matches the
@@ -195,7 +211,7 @@ window.__ModuleLoader__.load({
                       'div',
                       { className: 'rc-row', key: i },
                       h('code', null, `${e.tool || 'tool'} #${e.id}`),
-                      h('span', null, `${nf(e.chars)} · ${ago(e.ts)}`),
+                      h('span', null, `${nf(e.chars)} · ${ago(e.ts, T)}`),
                     ),
                   ),
             )
@@ -225,11 +241,16 @@ window.__ModuleLoader__.load({
       ctx.inject(['slots'], (scope) => {
         const slots = scope.slots
         if (!slots) return
-        slots.inject('shell.overlay', () =>
-          slots
-            .register({ name: 'shell.overlay', id: 'dsh-recall-pill', order: 100, inject: () => ({}) }, Pill)
-            .catch((e) => console.error('[recall] overlay slot failed:', e && (e.message || e))),
-        )
+        // slots.register() returns a disposer (ctx.effect), NOT a promise: the
+        // declaration effect must hand it straight back, never .catch() it.
+        slots.inject('shell.overlay', () => {
+          try {
+            return slots.register({ name: 'shell.overlay', id: 'dsh-recall-pill', order: 100, inject: () => ({}) }, Pill)
+          } catch (e) {
+            console.error('[recall] overlay slot failed:', e && (e.message || e))
+            return () => {}
+          }
+        })
       })
     }
 
