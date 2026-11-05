@@ -130,6 +130,8 @@ dsh plugin --profile web remove dsh-recall   # or edit the bundle row and pnpm i
 The store at `~/.local/share/dsh-recall/` is yours and is never touched by uninstall; delete it when
 you no longer want the objects.
 
+See [CHANGELOG.md](CHANGELOG.md) for the release history.
+
 ### Installing from a local checkout
 
 `dsh plugin --profile <p> add ~/Projects/dsh-recall` writes a `link:` dependency, and **node

@@ -131,6 +131,8 @@ dsh plugin --profile web remove dsh-recall   # либо правь строку 
 Хранилище в `~/.local/share/dsh-recall/` — твоё, и удаление плагина его не трогает; удали, когда
 объекты больше не нужны.
 
+История релизов — в [CHANGELOG.md](CHANGELOG.md).
+
 ### Установка из локального чекаута
 
 `dsh plugin --profile <p> add ~/Projects/dsh-recall` пишет зависимость `link:`, а **node резолвит

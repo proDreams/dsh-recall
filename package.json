@@ -19,7 +19,8 @@
     "client.js",
     "cordis.patch.yml",
     "README.md",
-    "README-RU.md"
+    "README-RU.md",
+    "CHANGELOG.md"
   ],
   "dsh": {
     "bundle": {
