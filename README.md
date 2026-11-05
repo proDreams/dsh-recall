@@ -3,8 +3,8 @@
 [Русская версия](./README-RU.md) · **English**
 
 A context-reclaim plugin for the **DeepSeek Harness** (`dsh`). A big tool result keeps its first
-600 characters in the conversation; the rest is written to disk under a short object id, and the
-model can pull any slice of it back with `recall("<id>")`. A strip under the composer reports the
+600 characters *and its last 240* in the conversation; the middle is written to a local SQLite
+store under a short object id, and the model can pull any slice of it back with `recall("<id>")`. A strip under the composer reports the
 three numbers that decide whether the trade is worth it: how much was moved out, how many tokens
 that kept out of the context, and how often the model actually went back for more.
 
@@ -32,16 +32,19 @@ there the lever is fresh input and step count instead.
 - Hooks `tools/post-execute` and looks at the session surface.
 - Touches only results **older than the newest two** (`KEEP = 2`) and **longer than 2 500
   characters** (`THRESHOLD`).
-- Replaces the result with `head (600 chars) + a [recall] note` using the same replay-safe pair the
-  stock pruner uses — a `compaction/prune` event that prices and cites the shadowed node, then a
-  `tool/result` event with `surfaceOp: {op:'replace'}`. The durable log keeps the original.
-- Writes the full text to `~/.local/share/dsh-recall/objects/<id>.txt` and appends one line to
-  `index.jsonl`.
+- Replaces the result with `head (600 chars) + a [recall] note + tail (240 chars)` using the same
+  replay-safe pair the stock pruner uses — a `compaction/prune` event that prices and cites the
+  shadowed node, then a `tool/result` event with `surfaceOp: {op:'replace'}`. The durable log keeps
+  the original. Only text is shortened; non-text blocks (images) ride along untouched.
+- Writes the full text to a local SQLite store (`~/.local/share/dsh-recall/store.db`), deflated and
+  content-addressed: the same output read twice is stored once.
+- Skips a result when the pointer would not be smaller than the original.
 - Registers the `recall` tool: `recall(id)`, `recall(id, start, count)`; default slice 8 000 chars,
   hard cap 24 000 so a recall cannot re-inflate the context it was built to shrink. Ids are
   validated (`/^[0-9a-f]{6,32}$/i`) before the filesystem is touched — the model will invent ids.
-- Is idempotent: a result that already contains the `[recall]` marker is skipped, so restarts and
-  repeated passes do not stack pointers.
+- Is idempotent structurally, not textually: the store knows which `(session, seq)` pairs were
+  already offloaded (and a replacement cites its original), so a tool that merely *prints* the
+  `[recall]` marker cannot make the reaper skip a genuine result.
 
 ## What this is not: the 15% compaction
 
@@ -83,11 +86,12 @@ offloads with tool name, size and age. Data comes from `GET /recall/api/stats` o
 loopback port, polled every 12 s:
 
 ```json
-{"offloaded":196,"charsSaved":1207034,"tokensSaved":301759,"recalls":0,"threshold":2500,"recent":[…]}
+{"offloaded":196,"charsSaved":1207034,"tokensSaved":301759,"recalls":0,"threshold":2500,"head":600,"tail":240,"keep":2,"recent":[…]}
 ```
 
-`offloaded` and `charsSaved` are recomputed from `index.jsonl`, so they survive restarts; `recalls`
-is the only counter that lives in memory and is mirrored to `counters.json`.
+`offloaded`, `charsSaved` and `tokensSaved` are SQL aggregates over the store, so they survive
+restarts and cannot be clobbered by a second process. `tokensSaved` is priced by the harness token
+meter (the original message minus the pointer message), not a `chars / 4` guess.
 
 ## Install
 
@@ -127,8 +131,22 @@ ln -sfn /usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-too
 
 ## Tuning the knobs
 
-`THRESHOLD` and `HEAD` are constants at the top of `index.js`. Chosen from the size distribution of
-12 real sessions (1 150 results, 487 k tokens), not by feel:
+The knobs are plugin configuration, so they live in the profile patch layer rather than in the
+source:
+
+```yaml
+- id: dsh-recall
+  name: dsh-recall
+  config:
+    thresholdChars: 2500   # only longer results are offloaded
+    headChars: 600         # kept inline at the start
+    tailChars: 240         # kept inline at the end (tool retrieval notices live here)
+    keep: 2                # the newest results are never touched
+    enabled: true          # turn the reaper off, keep recall(id) working
+```
+
+`thresholdChars: 2500 / headChars: 600` were chosen from the size distribution of 12 real sessions
+(1 150 results, 487 k tokens), not by feel:
 
 | threshold | head | results hit | saved | share of volume | recall objects |
 |---|---|---|---|---|---|
@@ -149,18 +167,32 @@ touching anything else. Anything in between is the tool earning its keep.
 ## Storage
 
 ```
-~/.local/share/dsh-recall/objects/<id>.txt   full text, one file per offloaded result
-~/.local/share/dsh-recall/index.jsonl        {session, seq, tool, id, chars, ts} per offload
-~/.local/share/dsh-recall/counters.json      {hits, charsSaved, recalls}
+~/.local/share/dsh-recall/store.db    one SQLite database (WAL)
 ```
 
-One flat pool per `$HOME`, shared by every project; the owning session is in the index. Ids are
-`md5(sessionId:seq:length)`, so identical-sized results from different sessions never collide.
-Measured cost: ~8 KB per object, 1.3 MB for a 196-offload session.
+Three tables: `objects` (id, session, seq, tool, char and token accounting, timestamp), `blobs`
+(the payload, zlib-deflated, keyed by the SHA-256 of the raw text) and `counters` (only `recalls`,
+everything else is an aggregate). A database rather than a directory of files buys four things:
+identical output is stored once, the payload is compressed, the strip's numbers are one query
+instead of a full `index.jsonl` parse, and two processes can write concurrently without last-writer
+wins.
 
-**There is no rotation.** Objects are never deleted. At 8 KB each that is ~120 MB per 10 000
-offloads — irrelevant next to the session logs themselves, but if you want a cap, delete
-`objects/*` older than N days and rebuild `index.jsonl` from what is left.
+One flat pool per `$HOME`, shared by every project. Ids are `md5(sessionId:seq:length)`. Inspect it
+with any SQLite client:
+
+```sh
+sqlite3 ~/.local/share/dsh-recall/store.db 'select tool, chars, datetime(ts/1000,"unixepoch") from objects order by ts desc limit 5'
+```
+
+If the 0.3 layout (`objects/*.txt` + `index.jsonl`) is present it is imported on first run and the
+JSONL index is renamed to `index.jsonl.migrated`; old object ids keep resolving. `node:sqlite` is a
+standard-library module, so there is no dependency — but it needs Node >= 22.5. On an older Node the
+plugin logs one line and loads without a store: no offloading, and `recall` reports it is
+unavailable, instead of failing the profile.
+
+**There is no rotation.** Objects are never deleted. The payload is compressed, but if you want a
+cap, `delete from objects where ts < …` and then `delete from blobs where hash not in (select hash
+from objects)`.
 
 ## Honest limits
 
@@ -169,20 +201,29 @@ offloads — irrelevant next to the session logs themselves, but if you want a c
 - Sessions resumed from a previous process start with an empty `callId → tool name` map, so an old
   result offloaded right after a restart may be labelled `tool` instead of `read`. Cosmetic.
 - Only results already in the surface are touched; the newest two are always intact.
-- `counters.json` is written by every runtime that mounts the plugin (host and web). Last writer
-  wins, so `recalls` can be clobbered by a second instance; the strip's other numbers are rebuilt
-  from the index and stay correct.
+- Two harness instances share one pool; SQLite serializes their writes (`busy_timeout`), and every
+  displayed number except `recalls` is derived, so they cannot disagree.
+- The reaper runs before the current result enters the surface, so it acts on earlier results; the
+  last big result of a session stays intact until something newer arrives.
 
 ## Test
 
 ```sh
-npm run check
-HOME=$(mktemp -d) node test/reaper.mjs   # HOME is overridden so the real state dir is untouched
+npm run check   # node --check on all three sources
+npm test        # store, reaper, real-Session integration, HTTP endpoint, client mount
 ```
 
-The test drives the hook with a hand-rolled session: it asserts that only the old, oversized result
-is replaced, that the pointer carries the real tool name from the matching `tool/call`, that a fresh
-big result is left alone, and that `recall` returns the requested slice and bumps the counters.
+Five probes, each pointing `HOME` at a throwaway directory so the real state dir is untouched:
+
+- `test/store.mjs` — verbatim roundtrip, code-point accounting, content-hash dedupe, compression,
+  derived counters, the foreign-database guard, and the 0.3 layout migration;
+- `test/reaper.mjs` — only the old oversized result is replaced, the pointer carries head, tail and
+  the real tool name, a fresh big result is left alone, `recall` returns the requested slice, and a
+  second pass offloads nothing;
+- `test/realsession.mjs` — the same rewrite driven through the **real** `Session` from
+  `@deepseek-ai/dsh-session`, so the surface-replace contract is the harness's, not a stub's;
+- `test/http-harness.mjs` — `GET /recall/api/stats` and its 404;
+- `test/client-harness.mjs` — the client half mounts and registers its `shell.overlay` entry.
 
 ## License
 

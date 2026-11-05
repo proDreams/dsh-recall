@@ -1,7 +1,7 @@
 {
   "name": "dsh-recall",
-  "version": "0.3.0",
-  "description": "Move big tool results out of the conversation to disk, keep their head inline, and let the model pull the rest back with recall(id). A strip under the composer shows what was offloaded and how often it was needed.",
+  "version": "0.4.0",
+  "description": "Move big tool results out of the conversation into a local SQLite store, keep their head and tail inline, and let the model pull the rest back with recall(id). A strip under the composer shows what was offloaded and how often it was needed.",
   "type": "module",
   "main": "./index.js",
   "exports": {
@@ -10,11 +10,12 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "check": "node --check index.js && node --check client.js",
-    "test": "node test/reaper.mjs"
+    "check": "node --check index.js && node --check store.js && node --check client.js",
+    "test": "node test/store.mjs && node test/reaper.mjs && node test/realsession.mjs && node test/http-harness.mjs && node test/client-harness.mjs"
   },
   "files": [
     "index.js",
+    "store.js",
     "client.js",
     "cordis.patch.yml",
     "README.md",
@@ -31,7 +32,7 @@
   "dshhub": {
     "schemaVersion": 1,
     "displayName": "dsh-recall",
-    "summary": "Big tool results keep only their first 600 characters in the conversation; the rest goes to disk under an object id the model can pull back with recall(id). A strip under the composer reports how much was offloaded, how many tokens that kept out of the context, and how often the model actually went back for more.",
+    "summary": "Big tool results keep their head and tail inline; the middle goes to a local SQLite store under an object id the model can pull back with recall(id). The store is deduplicated and compressed, every counter is an aggregate over it, and a strip under the composer reports how much was offloaded, how many tokens that kept out of the context, and how often the model actually went back for more.",
     "categories": [
       "Context",
       "Cost",
