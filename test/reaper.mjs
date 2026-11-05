@@ -14,7 +14,8 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 process.env.HOME = mkdtempSync(path.join(tmpdir(), 'dsh-recall-test-'))
-const { apply } = await import('../index.js')
+const { importHosted } = await import('./support/host.mjs')
+const { apply } = await importHosted('../index.js', import.meta.url)
 
 const big = (n, ch) => ch.repeat(n)
 const textOfMessage = (m) => (m.content ?? []).filter((b) => b.type === 'text').map((b) => b.text).join('')

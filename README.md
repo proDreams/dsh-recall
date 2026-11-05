@@ -359,6 +359,13 @@ npm test        # five probes, each with its own throwaway state directory
 | `test/http-harness.mjs` | `GET /recall/api/stats`, its shape, and its 404 |
 | `test/client-harness.mjs` | the client half mounts, registers its `shell.overlay` entry, and positions itself from the anchor |
 
+`npm test` runs in two environments. In a bare checkout — a fresh clone, a CI runner — the three probes
+that import the host half (`reaper`, `realsession`, `http-harness`) print `skip — …` and exit 0, while
+`store` and `client-harness` run; that is what the release workflow gates on, because installing the
+whole harness there would cost ~80 s per release and still test a different harness version than the
+one you run. Inside a dsh profile, or after `npm install --no-save @deepseek-ai/dsh`, all five run.
+Only a missing `@deepseek-ai/*` is tolerated: any other missing module fails the probe.
+
 The client probe exists because of a real regression: `slots.register()` returns a disposer, not a
 promise, so `.catch()`-ing it threw `TypeError: slots.register(...).catch is not a function` and the
 pill never mounted. The harness reproduces the real facade (a thenable function with no `.catch`) and

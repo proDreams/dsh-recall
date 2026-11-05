@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 process.env.HOME = mkdtempSync(path.join(tmpdir(), 'recall-http-'))
-const { apply } = await import('../index.js')
+const { importHosted } = await import('./support/host.mjs')
+const { apply } = await importHosted('../index.js', import.meta.url)
 
 const big = (n, ch) => ch.repeat(n)
 const events = new Map([

@@ -6,9 +6,10 @@ import path from 'node:path'
 import assert from 'node:assert/strict'
 
 process.env.HOME = mkdtempSync(path.join(tmpdir(), 'recall-real-'))
-const { Session } = await import('@deepseek-ai/dsh-session')
-const { createToolResultMessage, createUserMessage } = await import('@deepseek-ai/dsh-llm')
-const { apply } = await import('../index.js')
+const { importHosted } = await import('./support/host.mjs')
+const { Session } = await importHosted('@deepseek-ai/dsh-session', import.meta.url)
+const { createToolResultMessage, createUserMessage } = await importHosted('@deepseek-ai/dsh-llm', import.meta.url)
+const { apply } = await importHosted('../index.js', import.meta.url)
 
 const big = (n, ch) => ch.repeat(n)
 

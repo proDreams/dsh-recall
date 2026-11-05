@@ -12,6 +12,14 @@
 # and from GitHub's generated notes otherwise. That keeps this workflow identical
 # in shape to dsh-tidewatch's, without requiring a CHANGELOG that this project
 # does not have yet.
+#
+# The self-test is deliberately runnable on a bare runner: it does NOT install the
+# harness. `test/store.mjs` and `test/client-harness.mjs` need nothing beyond Node;
+# the three probes that import the host half (reaper, real-Session integration, the
+# HTTP endpoint) need the `@deepseek-ai/*` packages a dsh profile provides, and they
+# print `skip — …` and exit 0 instead of failing. Installing the whole harness here
+# would add ~80 s to every release and would still test a different harness version
+# than the one the reporter runs. Run all five locally, inside a profile.
 
 name: Release
 
@@ -72,6 +80,8 @@ jobs:
         if: steps.guard.outputs.skip != 'true'
         run: |
           npm run check
+          # Host probes skip with a notice when @deepseek-ai/* is absent; the store
+          # and client probes always run. See the header for why no harness here.
           npm test
 
       - name: Extract release notes from CHANGELOG.md
