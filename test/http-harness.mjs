@@ -52,5 +52,8 @@ function call(pathname) {
 
 const stats = call('/recall/api/stats')
 console.log('stats status:', stats.code)
+if (stats.body.bytes === undefined) throw new Error('stats must expose the on-disk footprint')
+if (stats.body.tokensSaved <= 0) throw new Error('tokensSaved must be priced by the meter')
+if (stats.body.threshold !== 2500) throw new Error('stats must echo the effective threshold')
 console.log(JSON.stringify(stats.body, null, 1))
 console.log('404 route:', call('/recall/nope').code)

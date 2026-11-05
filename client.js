@@ -31,6 +31,8 @@ window.__ModuleLoader__.load({
         savedLbl: 'tokens kept out of the context',
         backLbl: 'recall calls',
         charsLbl: 'chars of text on disk',
+        diskLbl: 'store',
+        capLbl: 'cap',
         agoS: 's',
         agoM: 'min',
         agoH: 'h',
@@ -47,6 +49,8 @@ window.__ModuleLoader__.load({
         savedLbl: 'токенов не попало в контекст',
         backLbl: 'обращений recall',
         charsLbl: 'символов текста на диске',
+        diskLbl: 'на диске',
+        capLbl: 'потолок',
         agoS: 'с',
         agoM: 'мин',
         agoH: 'ч',
@@ -125,6 +129,8 @@ window.__ModuleLoader__.load({
       .rc-stat b{font-family:var(--rc-mono);font-size:13px;font-weight:700;line-height:1.15;
         color:var(--rc-text);font-variant-numeric:tabular-nums}
       .rc-stat i{font-style:normal;font-size:9px;line-height:1.3;color:var(--rc-muted)}
+      .rc-foot{display:flex;justify-content:space-between;gap:8px;margin:0 0 6px;padding:0 2px;
+        font-family:var(--rc-mono);font-size:9.5px;color:var(--rc-muted);font-variant-numeric:tabular-nums}
     `
 
     function useStats() {
@@ -144,32 +150,70 @@ window.__ModuleLoader__.load({
     }
 
     // Anchor above the tidewatch chip when it is on screen, so the two pills read
-    // as one card. Falls back to the corner while the chip is missing or moving.
+    // as one card. `data-dsh-tide-anchor` is the documented contract (tidewatch
+    // exports it); `.tw-chip` stays supported for installs that predate it.
+    const ANCHOR_SELECTOR = '[data-dsh-tide-anchor], .tw-chip'
+
     function useAnchor(ref) {
       useEffect(() => {
-        let timer = 0
+        let frame = 0
+        let observer = null
+        let poll = 0
+        let polls = 0
         const place = () => {
+          frame = 0
           const el = ref.current
-          if (el) {
-            const chip = document.querySelector('.tw-chip')
-            if (chip) {
-              const r = chip.getBoundingClientRect()
-              el.style.right = `${Math.max(8, window.innerWidth - r.right)}px`
-              el.style.top = `${Math.max(8, r.top - 6 - el.offsetHeight)}px`
-              el.style.bottom = 'auto'
-            } else {
-              el.style.right = '16px'
-              el.style.top = 'auto'
-              el.style.bottom = '96px'
-            }
+          if (!el) return
+          const chip = document.querySelector(ANCHOR_SELECTOR)
+          if (!chip) {
+            el.style.right = '16px'
+            el.style.top = 'auto'
+            el.style.bottom = '96px'
+            return
           }
-          timer = window.setTimeout(place, 500)
+          const r = chip.getBoundingClientRect()
+          el.style.right = `${Math.max(8, window.innerWidth - r.right)}px`
+          el.style.top = `${Math.max(8, r.top - 6 - el.offsetHeight)}px`
+          el.style.bottom = 'auto'
         }
-        place()
-        window.addEventListener('resize', place)
+        const schedule = () => {
+          if (frame === 0) frame = window.requestAnimationFrame(place)
+        }
+        const stopPolling = () => {
+          if (poll) {
+            window.clearInterval(poll)
+            poll = 0
+          }
+        }
+        // Reposition on layout changes rather than on a timer that runs for the
+        // lifetime of the page: the anchor moves when the chip mounts, resizes or
+        // unmounts, and all three are mutations.
+        if (typeof MutationObserver === 'function') {
+          observer = new MutationObserver(() => {
+            schedule()
+            if (document.querySelector(ANCHOR_SELECTOR)) stopPolling()
+          })
+          observer.observe(document.body, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['class', 'style', 'hidden'],
+          })
+        }
+        // Bounded safety net until the anchor appears: the chip may mount after us.
+        if (!document.querySelector(ANCHOR_SELECTOR)) {
+          poll = window.setInterval(() => {
+            schedule()
+            if (document.querySelector(ANCHOR_SELECTOR) || ++polls > 60) stopPolling()
+          }, 500)
+        }
+        window.addEventListener('resize', schedule)
+        schedule()
         return () => {
-          window.clearTimeout(timer)
-          window.removeEventListener('resize', place)
+          if (frame) window.cancelAnimationFrame(frame)
+          stopPolling()
+          if (observer) observer.disconnect()
+          window.removeEventListener('resize', schedule)
         }
       }, [ref])
     }
@@ -193,7 +237,13 @@ window.__ModuleLoader__.load({
                 'div',
                 { className: 'rc-head' },
                 h('span', { className: 'rc-eyebrow' }, T('recent')),
-                h('span', { className: 'rc-thr' }, T('look', { n: nf(data.threshold) })),
+                h(
+                  'span',
+                  { className: 'rc-thr' },
+                  data.budgetTokens > 0
+                    ? `${T('look', { n: nf(data.threshold) })} · ${kk(data.budgetTokens)} tok`
+                    : T('look', { n: nf(data.threshold) }),
+                ),
               ),
               h('p', { className: 'rc-note' }, T('hint')),
               h(
@@ -203,6 +253,12 @@ window.__ModuleLoader__.load({
                 h('div', { className: 'rc-stat' }, h('b', null, nf(data.offloaded)), h('i', null, T('offLbl'))),
                 h('div', { className: 'rc-stat' }, h('b', null, nf(data.recalls)), h('i', null, T('backLbl'))),
                 h('div', { className: 'rc-stat' }, h('b', null, kk(data.charsSaved)), h('i', null, T('charsLbl'))),
+              ),
+              h(
+                'div',
+                { className: 'rc-foot' },
+                h('span', null, `${T('diskLbl')}: ${kk(data.bytes)}`),
+                data.maxBytes > 0 ? h('span', null, `${T('capLbl')}: ${kk(data.maxBytes)}`) : null,
               ),
               recent.length === 0
                 ? h('div', { className: 'rc-empty' }, T('empty'))

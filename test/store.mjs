@@ -77,6 +77,7 @@ writeFileSync(
 )
 const migrated = await Store.open(legacyDir, { headChars: 600 })
 assert.equal(migrated.text('deadbeef'), 'legacy payload ' + 'Z'.repeat(3000), 'old pointers still resolve')
+assert.equal(migrated.stats(1).recent[0].ts, 1, 'migration preserves the original timestamp')
 assert.equal(migrated.has('old-session', 4), true)
 assert.ok(existsSync(path.join(legacyDir, 'index.jsonl.migrated')), 'the jsonl index is retired, not deleted')
 assert.equal(migrated.diagnostics().objects, 1, 'migration is idempotent on a second open')
@@ -85,4 +86,36 @@ const twice = await Store.open(legacyDir, { headChars: 600 })
 assert.equal(twice.diagnostics().objects, 1, 're-running migration inserts nothing new')
 twice.close()
 
-console.log('ok — roundtrip, dedupe, compression, code points, counters, guard, migration')
+// --------------------------------------------------------- retention policy
+const gdir = mkdtempSync(path.join(tmpdir(), 'dsh-recall-gc-'))
+const gcStore = await Store.open(gdir)
+assert.deepEqual(gcStore.gc(), { objects: 0, blobs: 0 }, 'no limits means no eviction')
+for (const [i, ch] of ['A', 'B', 'C'].entries()) {
+  gcStore.put({ id: `g${i}00000`, session: 's', seq: i, tool: 'read', text: ch.repeat(3000), chars: 3000, inlineChars: 100, tokensSaved: 700 })
+}
+assert.equal(gcStore.diagnostics().objects, 3)
+assert.equal(gcStore.diagnostics().blobs, 3)
+const beforeBytes = gcStore.diagnostics().payloadBytes
+const evicted = gcStore.gc({ maxBytes: beforeBytes - 1 })
+assert.ok(evicted.objects >= 1, 'a cap below the payload evicts the oldest objects')
+assert.ok(gcStore.diagnostics().objects < 3)
+gcStore.gc({ maxBytes: 1 })
+assert.equal(gcStore.diagnostics().objects, 0)
+assert.equal(gcStore.diagnostics().blobs, 0, 'unreferenced blobs are reclaimed with their objects')
+gcStore.put({
+  id: 'aaaa9999',
+  session: 's',
+  seq: 9,
+  tool: 'read',
+  text: 'P'.repeat(500),
+  chars: 500,
+  inlineChars: 10,
+  tokensSaved: 10,
+  ts: Date.now() - 2 * 86400000,
+})
+assert.equal(gcStore.stats(1).recent[0].ts < Date.now() - 86400000, true, 'put accepts an explicit timestamp')
+const aged = gcStore.gc({ maxAgeDays: 1 })
+assert.equal(aged.objects, 1, 'objects older than maxAgeDays are evicted')
+gcStore.close()
+
+console.log('ok — roundtrip, dedupe, compression, code points, counters, guard, migration, retention')

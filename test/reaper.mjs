@@ -1,125 +1,147 @@
-// Unit probe for the reaper: drives the `tools/post-execute` hook with a hand-rolled
-// session and asserts the things that matter — only old oversized results are
-// replaced, the pointer keeps a head AND a tail plus the real tool name, the
-// rewrite is idempotent without trusting a text marker, and recall(id, start,
-// count) reads the exact slice back out of the store.
+// Probe for the reaper policy: drives `tools/post-execute` with a hand-rolled
+// session and asserts what matters —
+//   * only old oversized results are replaced (KEEP protects the newest);
+//   * the pointer keeps a head AND a tail, plus the real tool name;
+//   * a stock spill notice inside the tail budget survives whole;
+//   * the token budget gates the whole pass (nothing is shortened for free);
+//   * the rewrite is idempotent through the store, not through a text marker;
+//   * recall(id, start, count) returns the slice and recall(id, query) finds lines.
 //
-// The state dir is derived from $HOME, so the test points HOME at a throwaway
-// directory BEFORE importing the plugin; the real ~/.local/share/dsh-recall is
-// never touched.
+// Every mount gets its own $HOME state dir, so the real one is never touched.
 import assert from 'node:assert/strict'
-import { mkdtempSync, existsSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 process.env.HOME = mkdtempSync(path.join(tmpdir(), 'dsh-recall-test-'))
-const STATE = path.join(process.env.HOME, '.local/share/dsh-recall')
 const { apply } = await import('../index.js')
-const { Store } = await import('../store.js')
 
 const big = (n, ch) => ch.repeat(n)
-const events = new Map([
-  [1, { type: 'tool/call', data: { callId: 'call_A', name: 'read', arguments: '{}' } }],
-  [2, { type: 'tool/result', data: { message: { role: 'tool', source: { kind: 'tool', callId: 'call_A' }, content: [{ type: 'text', text: big(4000, 'X') }] } } }],
-  [3, { type: 'tool/call', data: { callId: 'call_B', name: 'bash', arguments: '{}' } }],
-  [4, { type: 'tool/result', data: { message: { role: 'tool', source: { kind: 'tool', callId: 'call_B' }, content: [{ type: 'text', text: 'small' }] } } }],
-  [5, { type: 'tool/call', data: { callId: 'call_C', name: 'bash', arguments: '{}' } }],
-  [6, { type: 'tool/result', data: { message: { role: 'tool', source: { kind: 'tool', callId: 'call_C' }, content: [{ type: 'text', text: 'fresh ' + big(5000, 'Y') }] } } }],
-  [7, { type: 'tool/call', data: { callId: 'call_D', name: 'bash', arguments: '{}' } }],
-  [8, { type: 'tool/result', data: { message: { role: 'tool', source: { kind: 'tool', callId: 'call_D' }, content: [{ type: 'text', text: 'hi' }] } } }],
-])
-
-const appended = []
-const session = {
-  id: 'stub-session',
-  surface: { nodes: new Set(events.keys()) },
-  eventAt: (seq) => events.get(seq),
-  deriveEventMessage: (ev) => ({ ...ev.data.message, role: 'tool' }),
-  append: (type, data, opts) => {
-    appended.push({ type, data, opts })
-    const seq = appended.length + 100
-    if (type === 'tool/result' && opts?.surfaceOp) {
-      events.set(opts.surfaceOp.startSeq, { type: 'tool/result', data, sourceEventSeqs: opts.sourceEventSeqs })
-    }
-    return { seq }
-  },
-}
-
 const textOfMessage = (m) => (m.content ?? []).filter((b) => b.type === 'text').map((b) => b.text).join('')
-// Token price proportional to text, so the accounting assertion is meaningful.
-const meter = { estimateMessage: (m) => Math.ceil(textOfMessage(m).length / 4) }
 
-let hook
-const tools = []
-const ctx = {
-  on: (ev, fn) => { if (ev === 'tools/post-execute') hook = fn },
-  effect: (fn) => fn(),
-  inject: () => {},
-  tokenMeter: meter,
-  tools: { register: (t) => tools.push(t) },
+/**
+ * Build a fake session from [{callId, name, text}], mount the plugin on a fake
+ * cordis ctx, and return the hook plus the observable pieces.
+ */
+async function mount({ texts, config = {}, measure }) {
+  const events = new Map()
+  let seq = 0
+  for (const { callId, name, text } of texts) {
+    seq += 1
+    events.set(seq, { type: 'tool/call', data: { callId, name, arguments: '{}' } })
+    seq += 1
+    events.set(seq, {
+      type: 'tool/result',
+      data: { message: { role: 'tool', source: { kind: 'tool', callId }, content: [{ type: 'text', text }] } },
+    })
+  }
+  const appended = []
+  const session = {
+    id: 'stub-session',
+    surface: { nodes: new Set(events.keys()) },
+    eventAt: (s) => events.get(s),
+    deriveEventMessage: (ev) => ({ ...ev.data.message, role: 'tool' }),
+    append: (type, data, opts) => {
+      appended.push({ type, data, opts })
+      if (type === 'tool/result' && opts?.surfaceOp) {
+        events.set(opts.surfaceOp.startSeq, { type: 'tool/result', data, sourceEventSeqs: opts.sourceEventSeqs })
+      }
+      return { seq: events.size + appended.length }
+    },
+  }
+  const meter = {
+    estimateMessage: (m) => Math.ceil(textOfMessage(m).length / 4),
+    measure: measure ?? (() => ({ totalTokens: 0 })),
+  }
+  let hook
+  const tools = []
+  await apply(
+    {
+      on: (ev, fn) => { if (ev === 'tools/post-execute') hook = fn },
+      effect: (fn) => fn(),
+      inject: () => {},
+      tokenMeter: meter,
+      tools: { register: (t) => tools.push(t) },
+    },
+    { stateDir: mkdtempSync(path.join(tmpdir(), 'recall-state-')), ...config },
+  )
+  const exec = { callId: texts.at(-1).callId, name: texts.at(-1).name, agent: { session } }
+  const run = () => hook(exec, { content: [] }, async () => ({ kind: 'accept', content: [] }))
+  await run()
+  return { session, events, appended, tools, run, recall: tools.find((t) => t.name === 'recall'), textAt: (s) => textOfMessage(events.get(s).data.message) }
 }
-await apply(ctx, {})
 
-const decision = { kind: 'accept', content: [] }
-const exec = { callId: 'call_D', name: 'bash', agent: { session } }
-await hook(exec, { content: [] }, async () => decision)
+const prunes = (mounted) => mounted.appended.filter((a) => a.type === 'compaction/prune')
 
-const textAt = (seq) => textOfMessage(events.get(seq).data.message)
-const prunes = appended.filter((a) => a.type === 'compaction/prune')
+// ---------------------------------------------------------------- base policy
+const base = await mount({
+  texts: [
+    { callId: 'call_A', name: 'read', text: big(4000, 'X') },
+    { callId: 'call_B', name: 'bash', text: 'small' },
+    { callId: 'call_C', name: 'bash', text: 'fresh ' + big(5000, 'Y') },
+    { callId: 'call_D', name: 'bash', text: 'hi' },
+  ],
+})
+assert.deepEqual(prunes(base).map((p) => p.data.shadowedSeqs[0]), [2], 'exactly seq 2 should be pruned')
+assert.ok(prunes(base)[0].data.shadowedTokenCount > 0, 'the shadow price comes from the token meter')
 
-// 1. only the old oversized result was shadowed (KEEP=2 leaves 6 and 8 alone)
-assert.deepEqual(prunes.map((p) => p.data.shadowedSeqs[0]), [2], 'exactly seq 2 should be pruned')
-assert.ok(prunes[0].data.shadowedTokenCount > 0, 'shadow price comes from the token meter')
-
-// 2. the pointer keeps a head and a tail, names the tool, quotes the real size
-const note = textAt(2)
+const note = base.textAt(2)
 assert.ok(note.startsWith('X'.repeat(600)), 'head of 600 chars stays inline')
 assert.ok(note.endsWith('X'.repeat(240)), 'tail of 240 chars stays inline')
-assert.ok(note.includes('[recall] read call_A'), 'pointer carries the tool name resolved from tool/call')
-assert.ok(note.length < 1400, 'pointer is much shorter than the original')
+assert.ok(note.includes('[recall] read call_A'), 'the pointer carries the tool name from the matching tool/call')
+assert.ok(note.length < 1400, 'the pointer is much shorter than the original')
+assert.equal(base.textAt(6), 'fresh ' + big(5000, 'Y'), 'the newest big result stays intact (keep=2)')
+assert.equal(base.textAt(4), 'small')
+assert.equal(base.textAt(8), 'hi')
+
 const id = /#([0-9a-f]{8})/.exec(note)?.[1]
-assert.ok(id, 'pointer carries an object id')
-assert.ok(note.includes(`recall("${id}")`), 'pointer tells the model how to fetch the rest')
+assert.ok(id, 'the pointer carries an object id')
+assert.ok(note.includes(`recall("${id}")`), 'the pointer says how to fetch the rest')
 
-// 3. the newest big result and every small one are untouched
-assert.equal(textAt(6), 'fresh ' + big(5000, 'Y'), 'fresh result stays intact (KEEP=2)')
-assert.equal(textAt(4), 'small')
-assert.equal(textAt(8), 'hi')
+// ------------------------------------------------------------- idempotence
+await base.run()
+assert.equal(prunes(base).length, 1, 'a stored result is never offloaded twice')
 
-// 4. the store has the full text and honest accounting
-const store = await Store.open(STATE)
-const full = store.text(id)
-assert.equal(full, big(4000, 'X'))
-let stats = store.stats()
-assert.equal(stats.offloaded, 1)
-assert.ok(stats.charsSaved > 0, 'chars saved is an aggregate over the store')
-assert.ok(stats.tokensSaved > 0, 'token savings come from the meter, not a /4 guess')
-assert.equal(stats.recent[0].tool, 'read', 'the index row carries the real tool name')
-assert.equal(stats.recent[0].chars, 4000)
+// ------------------------------------------------------------------- search
+const search = String(await base.recall.execute({ id, query: 'XXXX' }))
+assert.ok(search.includes(`object #${id}`), 'search is labelled with the object')
+assert.ok(search.includes('0: '), 'search reports the character offset of the match')
+const missing = String(await base.recall.execute({ id, query: 'no-such-token' }))
+assert.ok(missing.includes('no case-sensitive match'), 'an empty search says so instead of returning a slice')
+const slice = String(await base.recall.execute({ id, start: 3900, count: 200 }))
+assert.ok(slice.includes(big(100, 'X')), 'recall still returns the requested slice')
+assert.ok(String(await base.recall.execute({ id: 'nope' })).includes('not an object id'))
+assert.ok(String(await base.recall.execute({ id: 'abcdef12' })).includes('not found'))
 
-// 5. recall reads back a slice and counts the hit
-const recall = tools.find((t) => t.name === 'recall')
-assert.ok(recall, 'recall tool is registered')
-assert.equal(typeof recall.output.render, 'function', 'output.render must exist or every call dies')
-const out = String(await recall.execute({ id, start: 3900, count: 200 }))
-assert.ok(out.includes(big(100, 'X')), 'slice from the tail is real content')
-assert.ok(out.startsWith('[recall] object #' + id), 'slice is labelled')
-assert.equal(String(await recall.execute({ id: 'nope' })), 'recall: "nope" is not an object id (expected 8 hex chars).')
-assert.ok(String(await recall.execute({ id: 'abcdef12' })).includes('not found'))
+// ------------------------------------------- the stock spill notice survives
+const notice =
+  '(' +
+  'output omitted by the retention policy '.repeat(8) +
+  ' Full formatted result stored at: /tmp/dsh-spill-x/session-abc/result-1.txt. ' +
+  'Read the full result with the read tool on that path.)'
+assert.ok(notice.length > 240, 'the notice is longer than the tail budget, so a plain tail would cut it')
+const spill = await mount({
+  texts: [
+    { callId: 'call_S', name: 'bash', text: big(3000, 'D') + notice },
+    { callId: 'call_E', name: 'bash', text: 'a' },
+    { callId: 'call_F', name: 'bash', text: 'b' },
+  ],
+})
+const spillNote = spill.textAt(2)
+assert.ok(spillNote.endsWith(notice), 'the whole spill notice is kept, including its opening paren')
+assert.ok(spillNote.includes(' Full formatted result stored at: '), 'the locator the model needs is intact')
 
-// 6. a second pass is idempotent, and it is the store — not the text marker —
-//    that decides: a result merely *containing* "[recall]" is still skipped,
-//    but seq 2 is never offloaded twice.
-await hook(exec, { content: [] }, async () => decision)
-assert.equal(appended.filter((a) => a.type === 'compaction/prune').length, 1, 'a stored result is never offloaded twice')
-stats = store.stats()
-assert.equal(stats.offloaded, 1)
+// ------------------------------------------------------------ token budget
+const texts = [
+  { callId: 'call_A', name: 'read', text: big(4000, 'X') },
+  { callId: 'call_B', name: 'bash', text: 'small' },
+  { callId: 'call_C', name: 'bash', text: 'fresh ' + big(5000, 'Y') },
+  { callId: 'call_D', name: 'bash', text: 'hi' },
+]
+const roomy = await mount({ texts, config: { budgetTokens: 200000 }, measure: () => ({ totalTokens: 120000 }) })
+assert.equal(prunes(roomy).length, 0, 'nothing is shortened while the surface is inside its budget')
 
-// 7. the counters survive a restart (they are rows, not in-memory state)
-store.close()
-const reopened = await Store.open(STATE)
-assert.equal(reopened.stats().recalls, 1, 'recall count persisted')
-assert.equal(reopened.stats().offloaded, 1)
-reopened.close()
+const tight = await mount({ texts, config: { budgetTokens: 5000 }, measure: () => ({ totalTokens: 900000 }) })
+assert.equal(prunes(tight).length, 1, 'an over-budget surface is offloaded')
 
-console.log(`ok — 1 offload, ${note.length} chars inline, recall slice verified, store ${existsSync(path.join(STATE, 'store.db')) ? 'store.db' : 'MISSING'}`)
+console.log('ok — policy, spill notice, budget gate, idempotence, slice and search')

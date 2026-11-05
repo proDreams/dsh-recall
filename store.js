@@ -110,6 +110,9 @@ export class Store {
       if (appId === 0) {
         db.exec(`PRAGMA application_id = ${APPLICATION_ID}`)
         db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
+        // Declared before the first table so eviction can actually return pages to
+        // the filesystem; on a legacy database it stays a no-op.
+        db.exec('PRAGMA auto_vacuum = INCREMENTAL')
       }
       db.exec(SCHEMA)
     } catch (error) {
@@ -141,7 +144,7 @@ export class Store {
    * Persist one offloaded text (verbatim) and its accounting row.
    * @returns whether a new object row was inserted (false when it already existed)
    */
-  put({ id, session, seq, tool, text, chars, inlineChars, tokensSaved }) {
+  put({ id, session, seq, tool, text, chars, inlineChars, tokensSaved, ts }) {
     const raw = Buffer.from(text, 'utf8')
     const hash = createHash('sha256').update(raw).digest('hex')
     const deflated = zlib.deflateRawSync(raw)
@@ -154,7 +157,7 @@ export class Store {
     )
     const info = this.#stmt(
       'INSERT OR IGNORE INTO objects (id, session, seq, tool, chars, inline_chars, tokens_saved, ts, hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    ).run(id, session, seq, tool, chars, inlineChars, tokensSaved, Date.now(), hash)
+    ).run(id, session, seq, tool, chars, inlineChars, tokensSaved, Number.isFinite(ts) ? ts : Date.now(), hash)
     return info.changes > 0
   }
 
@@ -178,6 +181,7 @@ export class Store {
 
   /** Aggregate counters and the latest offloads for the strip. */
   stats(limit = 12) {
+    const disk = this.#diskBytes()
     const agg = this.#stmt(
       'SELECT COUNT(*) AS n, COALESCE(SUM(chars - inline_chars), 0) AS charsSaved, COALESCE(SUM(tokens_saved), 0) AS tokensSaved FROM objects',
     ).get()
@@ -190,6 +194,8 @@ export class Store {
       charsSaved: Number(agg.charsSaved),
       tokensSaved: Number(agg.tokensSaved),
       recalls: Number(recalls),
+      bytes: Number(disk.bytes),
+      rawBytes: Number(disk.raw),
       recent: recent.map((row) => ({ ...row })),
     }
   }
@@ -201,6 +207,49 @@ export class Store {
     const { bytes } = this.#stmt('SELECT COALESCE(SUM(bytes), 0) AS bytes FROM blobs').get()
     const { payload } = this.#stmt('SELECT COALESCE(SUM(LENGTH(payload)), 0) AS payload FROM blobs').get()
     return { objects: Number(objects), blobs: Number(blobs), bytes: Number(bytes), payloadBytes: Number(payload) }
+  }
+
+  /** Payload bytes actually held by the shared blob table (deduplicated). */
+  #diskBytes() {
+    const row = this.#stmt(
+      'SELECT COALESCE(SUM(LENGTH(payload)), 0) AS bytes, COALESCE(SUM(bytes), 0) AS raw FROM blobs',
+    ).get()
+    return { bytes: Number(row.bytes), raw: Number(row.raw) }
+  }
+
+  /**
+   * Evict to a retention policy: objects older than `maxAgeDays`, then oldest
+   * first until the payload fits `maxBytes`, then drop unreferenced blobs.
+   * Deleting an object breaks pointers to it — that is inherent to any cap, so
+   * it only runs when a limit is configured.
+   * @returns counts of evicted objects and reclaimed blobs
+   */
+  gc({ maxAgeDays = 0, maxBytes = 0 } = {}) {
+    const evicted = { objects: 0, blobs: 0 }
+    if (!(maxAgeDays > 0) && !(maxBytes > 0)) return evicted
+    if (maxAgeDays > 0) {
+      const cutoff = Date.now() - maxAgeDays * 86400000
+      evicted.objects += Number(this.#stmt('DELETE FROM objects WHERE ts < ?').run(cutoff).changes)
+    }
+    if (maxBytes > 0) {
+      // Batches of 64 bound the overshoot without one statement per object.
+      for (let guard = 0; guard < 1024; guard += 1) {
+        if (this.#diskBytes().bytes <= maxBytes) break
+        const victims = this.#stmt('SELECT id FROM objects ORDER BY ts ASC, rowid ASC LIMIT 64').all()
+        if (victims.length === 0) break
+        for (const victim of victims) this.#stmt('DELETE FROM objects WHERE id = ?').run(victim.id)
+        evicted.objects += victims.length
+      }
+    }
+    evicted.blobs = Number(
+      this.#stmt('DELETE FROM blobs WHERE hash NOT IN (SELECT hash FROM objects)').run().changes,
+    )
+    try {
+      this.#db.exec('PRAGMA incremental_vacuum')
+    } catch {
+      // Legacy databases created without incremental auto-vacuum keep their pages.
+    }
+    return evicted
   }
 
   close() {
@@ -246,6 +295,9 @@ export class Store {
           chars,
           inlineChars,
           tokensSaved: Math.max(0, Math.round((chars - inlineChars) / 4)),
+          // Keep the original age: a migrated object must not look brand new to
+          // the retention policy.
+          ...Number.isFinite(row.ts) ? { ts: row.ts } : {},
         })
         if (inserted) imported += 1
       }
