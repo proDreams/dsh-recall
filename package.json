@@ -1,7 +1,7 @@
 {
   "name": "dsh-recall",
-  "version": "0.4.0",
-  "description": "Move big tool results out of the conversation into a local SQLite store, keep their head and tail inline, and let the model pull the rest back with recall(id). A strip under the composer shows what was offloaded and how often it was needed.",
+  "version": "0.5.0",
+  "description": "Move big tool results out of the conversation into a local SQLite store, keep their head and tail inline, and let the model pull the rest back with recall(id) or find it with recall(id, query). A strip under the composer shows what was offloaded and how often it was needed.",
   "type": "module",
   "main": "./index.js",
   "exports": {
@@ -32,7 +32,7 @@
   "dshhub": {
     "schemaVersion": 1,
     "displayName": "dsh-recall",
-    "summary": "Big tool results keep their head and tail inline; the middle goes to a local SQLite store under an object id the model can pull back with recall(id). The store is deduplicated and compressed, every counter is an aggregate over it, and a strip under the composer reports how much was offloaded, how many tokens that kept out of the context, and how often the model actually went back for more.",
+    "summary": "Big tool results keep their head and tail inline; the middle goes to a deduplicated, compressed SQLite store under an object id the model can read back with recall(id), slice with recall(id, start, count), or search with recall(id, query). An optional token budget gates the rewrite, retention caps keep the store bounded, and a strip under the composer reports how much was offloaded, how many tokens that kept out of the context, and how often the model actually went back for more.",
     "categories": [
       "Context",
       "Cost",
@@ -66,7 +66,9 @@
     "offload",
     "recall",
     "tokens",
-    "cost"
+    "cost",
+    "sqlite",
+    "retention"
   ],
   "repository": {
     "type": "git",
