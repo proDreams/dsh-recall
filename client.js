@@ -30,7 +30,7 @@ window.__ModuleLoader__.load({
         offLbl: 'offloaded',
         savedLbl: 'tokens kept out of the context',
         backLbl: 'recall calls',
-        charsLbl: 'chars of text on disk',
+        charsLbl: 'chars kept out of the context',
         diskLbl: 'store',
         capLbl: 'cap',
         agoS: 's',
@@ -48,7 +48,7 @@ window.__ModuleLoader__.load({
         offLbl: 'вынесено',
         savedLbl: 'токенов не попало в контекст',
         backLbl: 'обращений recall',
-        charsLbl: 'символов текста на диске',
+        charsLbl: 'символов не попало в контекст',
         diskLbl: 'на диске',
         capLbl: 'потолок',
         agoS: 'с',
@@ -172,7 +172,10 @@ window.__ModuleLoader__.load({
             return
           }
           const r = chip.getBoundingClientRect()
-          el.style.right = `${Math.max(8, window.innerWidth - r.right)}px`
+          // clientWidth excludes the vertical scrollbar; innerWidth includes it, which
+          // pushed the pill a scrollbar-width left of the chip it is meant to align with.
+          const viewport = document.documentElement?.clientWidth ?? window.innerWidth
+          el.style.right = `${Math.max(8, viewport - r.right)}px`
           el.style.top = `${Math.max(8, r.top - 6 - el.offsetHeight)}px`
           el.style.bottom = 'auto'
         }

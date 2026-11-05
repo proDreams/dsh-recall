@@ -33,6 +33,8 @@ globalThis.document = {
   createElement: () => ({ set textContent(v) {}, id: '', style: {} }),
   head: { appendChild() {} },
   body: {},
+  // 15px narrower than window.innerWidth: a visible vertical scrollbar.
+  documentElement: { clientWidth: 1425 },
   querySelector: (selector) => {
     queries += 1
     return selector.includes('data-dsh-tide-anchor') || selector.includes('.tw-chip') ? chip : null
@@ -101,7 +103,7 @@ while (frames.length > 0) frames.shift()()
 
 const root = refs.find((ref) => ref.current && ref.current.style && Object.keys(ref.current.style).length > 0)?.current
 assert.ok(root, 'the pill root received its ref and was positioned')
-assert.equal(root.style.right, '40px', 'right edge aligned to the tide chip')
+assert.equal(root.style.right, '25px', 'right edge aligned to the chip, scrollbar excluded')
 assert.equal(root.style.top, '668px', 'stacked 6px above the tide chip')
 assert.equal(root.style.bottom, 'auto')
 assert.ok(queries > 0, 'the anchor was actually looked up')
