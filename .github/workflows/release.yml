@@ -1,0 +1,128 @@
+# Release: cut a GitHub Release for whatever version is in package.json.
+#
+# Unlike a tag-triggered release this needs no tag push. Every push to main reads
+# `version` from package.json; when that version is not published yet the job runs
+# the checks, builds the installable tarball and creates the Release (the tag
+# comes with it). So the whole release procedure is: bump `version`, push, done.
+#
+# Re-running for an already published version is a no-op rather than a failure —
+# which is what a fork needs, where the maintainer pushes code but never tags.
+#
+# Notes come from a `## v. <version>` section in CHANGELOG.md when there is one,
+# and from GitHub's generated notes otherwise. That keeps this workflow identical
+# in shape to dsh-tidewatch's, without requiring a CHANGELOG that this project
+# does not have yet.
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+  # Manual recovery path: release the version currently in package.json again,
+  # e.g. after a failed run, without touching the version.
+  workflow_dispatch:
+
+permissions:
+  contents: write # create the tag and the GitHub Release
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '22' # the object store uses node:sqlite, which needs >= 22.5
+
+jobs:
+  release:
+    name: Publish the tarball for package.json's version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Resolve the version
+        run: |
+          pkg="$(node -p "require('./package.json').version")"
+          echo "VERSION=${pkg}" >> "$GITHUB_ENV"
+          echo "TAG=v${pkg}" >> "$GITHUB_ENV"
+          echo "Releasing v${pkg} from package.json"
+
+      - name: Skip when this version is already released
+        id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${TAG} is already released; bump \`version\` in package.json to cut a new release."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Nothing published as ${TAG} yet — releasing it."
+          fi
+
+      - name: Syntax check and self-test
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          npm run check
+          npm test
+
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          if [ ! -f CHANGELOG.md ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "No CHANGELOG.md — the Release will use generated notes."
+            exit 0
+          fi
+          awk -v heading="## v. ${VERSION}" '
+            $0 == heading { found = 1; next }
+            found && /^## / { exit }
+            found { if (!started && $0 == "") next; started = 1; print }
+          ' CHANGELOG.md > release-notes.md
+          if [ -s release-notes.md ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo '--- release notes ---'
+            cat release-notes.md
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "CHANGELOG.md has no '## v. ${VERSION}' section — using generated notes."
+          fi
+
+      - name: Build the installable tarball
+        if: steps.guard.outputs.skip != 'true'
+        run: npm pack --pack-destination .
+
+      - name: Create the GitHub Release (project notes)
+        if: steps.guard.outputs.skip != 'true' && steps.notes.outputs.found == 'true'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.TAG }}
+          name: dsh-recall ${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          body_path: release-notes.md
+          files: '*.tgz'
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create the GitHub Release (generated notes)
+        if: steps.guard.outputs.skip != 'true' && steps.notes.outputs.found != 'true'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.TAG }}
+          name: dsh-recall ${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          files: '*.tgz'
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
